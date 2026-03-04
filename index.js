@@ -6,7 +6,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // REEMPLAZA CON TU ENLACE DE GOOGLE SHEETS (PUBLICADO COMO CSV)
-const SHEET_URL = "TU_ENLACE_AQUI"; 
+const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1HOnc44gMV-T3mzayeqRm10--wC2Xr9PzHTN7lfqdMrAH0oZ0m5-eVEndK26yn2jwT7/pub?gid=1244806406&single=true&output=csv"; 
 
 app.post('/', async (req, res) => {
     try {
@@ -61,4 +61,5 @@ app.post('/', async (req, res) => {
 app.get('/', (req, res) => res.send("Servidor de Remesas Activo ✅"));
 
 const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, '0.0.0.0', () => console.log("Servidor corriendo"));
