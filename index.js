@@ -57,7 +57,7 @@ app.post('/', async (req, res) => {
     let match = rawMessage.match(/\d+([\d.]*)/);
     if (!match) return res.json({ replies: [{ message: "Indica un monto." }] });
 
-    let monto = parseFloat(match[0].replace(/\./g, '')); 
+    let monto = parseFloat(match[0].replace(/\./g, ''));
     let esBs = /bs|bolivares/i.test(rawMessage);
     let esPesos = /pesos|clp/i.test(rawMessage);
     let dlar, clp, bs, resp;
@@ -90,4 +90,5 @@ app.post('/', async (req, res) => {
 });
 
 app.get('/', (req, res) => res.send("OK"));
+
 app.listen(process.env.PORT || 10000, '0.0.0.0');
