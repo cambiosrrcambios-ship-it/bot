@@ -5,32 +5,38 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// REEMPLAZA CON TU ENLACE CSV DE GOOGLE SHEETS
-const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1HOnc44gMV-T3mzayeqRm10--wC2Xr9PzHTN7lfqdMrAH0oZ0m5-eVEndK26yn2jwT7/pub?gid=1244806406&single=true&output=csv"; 
+// TU ENLACE CONFIGURADO
+const SHEET_URL = "https://docs.google.com"; 
 
 app.post('/', async (req, res) => {
     try {
         const response = await axios.get(SHEET_URL);
+        // Dividimos por filas
         const filas = response.data.split(/\r?\n/);
-        // Fila 2 del Excel (índice 1 en el código)
+        
+        // Buscamos la FILA 2 (que en código es el índice 1)
         const columnas = filas[1].split(','); 
 
-        // Función para limpiar cualquier texto, comillas o espacios y dejar solo el número
-        const limpiar = (val) => parseFloat(val.replace(/[^0-9.]/g, ''));
+        // Función para extraer solo números (quita comillas, espacios o símbolos)
+        const limpiarNum = (val) => {
+            if (!val) return 0;
+            return parseFloat(val.replace(/[^0-9.]/g, ''));
+        };
 
-        const T_BASE = limpiar(columnas[1]); // Celda B2
-        const T_60K  = limpiar(columnas[2]); // Celda C2
-        const T_250K = limpiar(columnas[3]); // Celda D2
-        const BCV    = limpiar(columnas[5]); // Celda F2
+        // Según tu Excel: B=1, C=2, D=3, F=5
+        const T_BASE = limpiarNum(columnas[1]); 
+        const T_60K  = limpiarNum(columnas[2]); 
+        const T_250K = limpiarNum(columnas[3]); 
+        const BCV    = limpiarNum(columnas[5]); 
 
-        // Verificar si los números son válidos
-        if (isNaN(T_BASE) || isNaN(BCV)) {
-            throw new Error("Datos de tasa no numéricos");
+        // Verificación de seguridad
+        if (!T_BASE || !BCV) {
+            throw new Error("Datos incompletos en Excel");
         }
 
         let rawMessage = req.body.query || req.body.message || "";
         let match = rawMessage.match(/\d+([\d.]*)/);
-        if (!match) return res.json({ replies: [{ message: "Indica un monto." }] });
+        if (!match) return res.json({ replies: [{ message: "Indica un monto numérico." }] });
 
         let monto = parseFloat(match[0].replace(/\./g, ''));
         let esBs = /bs|bolivares|bolívares/i.test(rawMessage);
@@ -56,12 +62,15 @@ app.post('/', async (req, res) => {
             bs = dlar * BCV;
             resp = Si necesitas ${dlar} dólares, a BCV (${BCV}) serían ${Math.round(clp).toLocaleString('es-CL')} pesos y llegan ${bs.toLocaleString('es-VE', {minimumFractionDigits:2})} Bs.;
         }
+
         return res.json({ replies: [{ message: resp }] });
 
     } catch (error) {
-        return res.json({ replies: [{ message: "Error: No pude leer las tasas del Excel. Revisa las celdas B2, C2, D2 y F2." }] });
+        return res.json({ replies: [{ message: "Error: No se pudieron leer las tasas del Excel. Revisa B2, C2, D2 y F2." }] });
     }
 });
 
 app.get('/', (req, res) => res.send("Servidor Activo ✅"));
-app.listen(process.env.PORT || 10000, '0.0.0.0');
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor OK"));
