@@ -2,28 +2,6 @@ const express = require('express');
 const axios = require('axios');
 const app = express();
 
-// Soporte para leer JSON y datos de formularios
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// REEMPLAZA CON TU ENLACE DE GOOGLE SHEETS (PUBLICADO COMO CSV)
-const SHEET_URL = "TU_ENLACE_AQUI"; 
-
-app.post('/', async (req, res) => {
-    console.log("Mensaje recibido:", req.body); // Esto imprimirá en los Logs de Render
-    
-    try {
-        // 1. Obtener datos del Excel Online
-        const response = await axios.get(SHEET_URL);
-        const filas = response.data.split('\n');
-        const columnas = filas[1].split(','); // Fila 2
-
-        const T_BASE = parseFloat(columnas[1]); // B2
-        const T_60K  = parseFloat(columnas[2]); // C…
-[4:12 p. m., 4/3/2026] Kevin Rodriguez: const express = require('express');
-const axios = require('axios');
-const app = express();
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
