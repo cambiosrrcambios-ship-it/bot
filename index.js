@@ -3,71 +3,58 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// URL de tu Google Sheet (asegúrate de que esté publicada como CSV)
 const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1HOnc44gMV-T3mzayeqRm10--wC2Xr9PzHTN7lfqdMrAH0oZ0m5-eVEndK26yn2jwT7/pub?gid=1244806406&single=true&output=csv";
 
-// FUNCIÓN PARA LIMPIAR NÚMEROS (Maneja comillas, puntos y comas)
 const limpiar = (v) => {
     if (!v) return 0;
-    // Eliminamos todo lo que no sea número, punto o coma
     let n = v.toString().replace(/[^0-9.,]/g, '');
     if (!n) return 0;
-
-    // Si tiene coma y punto (ej: 1.200,50), quitamos el punto y usamos la coma como decimal
-    if (n.includes(',') && n.includes('.')) {
-        n = n.replace(/\./g, '').replace(',', '.');
-    } 
-    // Si solo tiene coma (ej: 36,50), la convertimos en punto
-    else if (n.includes(',')) {
-        n = n.replace(',', '.');
-    }
-    
-    const resultado = parseFloat(n);
-    return isNaN(resultado) ? 0 : resultado;
+    if (n.includes(',') && n.includes('.')) n = n.replace(/\./g, '').replace(',', '.');
+    else if (n.includes(',')) n = n.replace(',', '.');
+    return parseFloat(n) || 0;
 };
 
 app.post('/', async (req, res) => {
     try {
-        // 1. LEER DATOS DE GOOGLE SHEETS
+        // 1. OBTENER TASAS DESDE GOOGLE
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
-        
-        if (filas.length < 2) throw new Error("Excel sin datos suficientes en fila 2.");
+        const columnas = filas[1].split(filas[1].includes(';') ? ';' : ',');
 
-        const fila2 = filas[1];
-        const separador = fila2.includes(';') ? ';' : ',';
-        const columnas = fila2.split(separador);
-
-        // Mapeo de columnas: B=1, C=2, D=3, F=5
         const T_BASE  = limpiar(columnas[1]);
         const T_60K   = limpiar(columnas[2]);
         const T_250K  = limpiar(columnas[3]);
         const BCV     = limpiar(columnas[5]);
 
-        // Verificación de seguridad
-        if (T_BASE <= 0 || BCV <= 0) {
-            throw new Error(`Valores en 0. B2:[${columnas[1]}] F2:[${columnas[5]}]`);
-        }
-
-        // 2. EXTRAER EL MENSAJE DEL CHAT (Detección de plataforma)
-        // Intentamos encontrar el texto en cualquier campo posible
+        // 2. BUSCAR EL TEXTO (Aquí estaba el fallo)
+        // Revisamos el body completo para encontrar cualquier texto que el usuario haya enviado
         let raw = "";
-        if (req.body.text) raw = req.body.text;
-        else if (req.body.query) raw = req.body.query;
-        else if (req.body.message) raw = req.body.message;
-        else if (req.body.content) raw = req.body.content;
-        else if (req.body.body) raw = req.body.body;
         
-        raw = String(raw); // Forzamos que sea texto
+        // Esta función busca texto en cualquier propiedad del JSON recibido
+        const buscarTexto = (obj) => {
+            for (let key in obj) {
+                if (typeof obj[key] === 'string' && obj[key].length > 1) return obj[key];
+                if (typeof obj[key] === 'object') {
+                    let res = buscarTexto(obj[key]);
+                    if (res) return res;
+                }
+            }
+            return "";
+        };
 
-        // Buscamos un número en el mensaje
+        raw = buscarTexto(req.body) || "";
+        console.log("Mensaje detectado:", raw);
+
+        // Intentar sacar el número
         let numMatch = raw.match(/\d+([\d.,]*)/);
         
-        if (!numMatch || raw === "undefined" || raw === "") {
-            return res.json({ replies: [{ message: "¡Hola! 💸 Indica un monto para calcular.\n\nEjemplos:\n- 50000 pesos\n- 100 usd\n- 5000 bs" }] });
+        if (!numMatch || raw === "") {
+            return res.json({ 
+                replies: [{ message: "¡Hola! 💸 No logré entender el monto.\n\nEscribe por ejemplo: '20 usd' o '50000 pesos'." }] 
+            });
         }
 
-        // 3. LÓGICA DE CONVERSIÓN
+        // 3. CÁLCULOS
         let monto = limpiar(numMatch[0]);
         let esBs = /bs|bolivares/i.test(raw);
         let esPesos = /pesos|clp/i.test(raw);
@@ -82,15 +69,12 @@ app.post('/', async (req, res) => {
         } else if (esBs) {
             bs = monto;
             dlar = bs / BCV;
-            // Para saber la tasa CLP, simulamos el envío en dólares
-            let montoClpEquivalente = dlar * T_BASE;
-            let t = montoClpEquivalente >= 250000 ? T_250K : (montoClpEquivalente >= 60000 ? T_60K : T_BASE);
+            let t = (dlar * T_BASE >= 250000) ? T_250K : (dlar * T_BASE >= 60000 ? T_60K : T_BASE);
             clp = dlar * t;
             resp = `✅ *Cálculo RyR*\n\n🇻🇪 Para recibir: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📊 Tasa BCV: ${BCV.toFixed(2)}\n💵 Equivale a: ${dlar.toFixed(2)} USD\n\n🇨🇱 *Debes enviar: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
         } else {
             dlar = monto;
-            let montoClpEquivalente = dlar * T_BASE;
-            let t = montoClpEquivalente >= 250000 ? T_250K : (montoClpEquivalente >= 60000 ? T_60K : T_BASE);
+            let t = (dlar * T_BASE >= 250000) ? T_250K : (dlar * T_BASE >= 60000 ? T_60K : T_BASE);
             clp = dlar * t;
             bs = dlar * BCV;
             resp = `✅ *Cálculo RyR*\n\n💵 Monto: ${dlar} USD\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
@@ -99,14 +83,9 @@ app.post('/', async (req, res) => {
         return res.json({ replies: [{ message: resp }] });
 
     } catch (error) {
-        console.error("Error detectado:", error.message);
-        return res.json({ replies: [{ message: "⚠️ Error de conexión: " + error.message }] });
+        return res.json({ replies: [{ message: "⚠️ Error: " + error.message }] });
     }
 });
 
-app.get('/', (req, res) => res.send("Servidor de Tasas RyR activo y funcionando."));
-
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor escuchando en puerto ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR en línea"));
