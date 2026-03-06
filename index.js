@@ -9,61 +9,66 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 
 app.post('/', async (req, res) => {
     try {
-        const query = req.body.query || {};
-        const userMsg = query.message || req.body.message || "";
+        // 1. CAPTURAR EL MENSAJE (Sin filtros de números)
+        const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
+        
+        if (!userMsg || userMsg.trim() === "") {
+            return res.json({ replies: [] });
+        }
 
-        // 1. OBTENER TASAS DEL EXCEL
+        // 2. OBTENER TASAS DEL EXCEL
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
 
         const infoTasas = `
-        TASAS RYR DE HOY:
-        - Menos de 60,000 CLP: Tasa ${col[1]}
-        - Desde 60,000 CLP: Tasa ${col[2]}
-        - Desde 250,000 CLP: Tasa ${col[3]}
-        - Dólar BCV: ${col[5]} BS/USD
+        TASAS RYR:
+        - Base: ${col[1]}
+        - 60k+: ${col[2]}
+        - 250k+: ${col[3]}
+        - BCV: ${col[5]}
         `;
 
-        // 2. INSTRUCCIONES REFORZADAS
+        // 3. CHATGPT PROCESA TODO (Números y letras)
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 { 
                     role: "system", 
-                    content: `Eres el experto en cambios de Remesas RyR. 
+                    content: `Eres el experto de Remesas RyR. 
                     DATOS: ${infoTasas}.
-
-                    INSTRUCCIONES DE INTERPRETACIÓN:
-                    - "mil" o "k" equivalen a 000 (Ej: "20 mil" = 20000).
-                    - "luka" o "luca" equivalen a 1000 CLP.
-                    - Si el usuario dice "20mil bs", entiende que son 20,000 Bolívares.
-
-                    INSTRUCCIONES DE CÁLCULO:
-                    - Si piden BS: Primero divide BS / BCV para tener USD. Luego calcula cuántos CLP se necesitan para esos USD usando la tasa del Excel.
-                    - Si piden USD: Calcula cuántos CLP se necesitan y cuántos BS recibirá.
-                    - SIEMPRE indica el monto en PESOS CHILENOS (CLP) que el cliente debe pagar.
-
-                    FORMATO DE RESPUESTA:
+                    
+                    ENTIENDE EL LENGUAJE:
+                    - "mil", "k", "kilos" = 000 (Ej: 20mil = 20000).
+                    - "luca", "luka" = 1000 CLP.
+                    
+                    REGLA DE CÁLCULO:
+                    - Si piden Bolívares: Divide por BCV para sacar USD, luego calcula CLP.
+                    - SIEMPRE indica cuánto debe enviar el cliente en PESOS CHILENOS (CLP).
+                    
+                    FORMATO:
                     ✅ *Cotización RyR*
                     💰 **Monto:** [Monto solicitado]
                     ---
                     🇨🇱 **Envías:** [Monto] CLP
-                    📈 **Tasa:** [Tasa usada]
+                    📈 **Tasa:** [Tasa]
                     💵 **Equivalente:** [Monto] USD
                     🇻🇪 **Reciben:** [Monto] Bs.
                     ---
-                    ¿Te gustaría que te envíe los datos de transferencia?`
+                    ¿Te envío los datos para el depósito?`
                 },
                 { role: "user", content: userMsg }
             ],
             temperature: 0
         });
 
-        res.json({ replies: [{ message: completion.choices[0].message.content }] });
+        const respuestaIA = completion.choices[0].message.content;
+        return res.json({ replies: [{ message: respuestaIA }] });
 
     } catch (e) {
-        res.json({ replies: [{ message: "Hola! Por favor indica el monto y la moneda para cotizarte de inmediato. Ejemplo: 20 mil pesos." }] });
+        console.error("Error:", e);
+        // Si no entiende el monto o algo falla, enviamos el mensaje de ayuda
+        return res.json({ replies: [{ message: "⚠️ Por favor, indícame el monto y la moneda (ej: 20 mil pesos o 50 dólares) para darte el valor exacto." }] });
     }
 });
 
