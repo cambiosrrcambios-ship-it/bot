@@ -17,45 +17,53 @@ app.post('/', async (req, res) => {
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
 
-        // Preparamos la chuleta para la IA
-        const datosMercado = `
-        - Tasa para menos de 60k CLP: ${col[1]}
-        - Tasa para 60k CLP o más: ${col[2]}
-        - Tasa para 250k CLP o más: ${col[3]}
-        - Valor Dólar BCV: ${col[5]} Bs por USD
+        const infoTasas = `
+        TASAS RYR DE HOY:
+        - Menos de 60,000 CLP: Tasa ${col[1]}
+        - Desde 60,000 CLP: Tasa ${col[2]}
+        - Desde 250,000 CLP: Tasa ${col[3]}
+        - Dólar BCV: ${col[5]} BS/USD
         `;
 
-        // 2. INSTRUCCIONES ESTRICTAS PARA CHATGPT
+        // 2. INSTRUCCIONES REFORZADAS
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 { 
                     role: "system", 
-                    content: `Eres el Agente de Ventas de Remesas RyR. Tu misión es convertir montos entre CLP, USD y BS usando estos datos: ${datosMercado}.
-                    
-                    REGLAS CRÍTICAS:
-                    1. TODO cálculo debe mostrar cuánto debe pagar el cliente en PESOS CHILENOS (CLP).
-                    2. Si te piden Bolívares (BS), calcula cuántos Dólares son (BS / BCV) y luego cuántos Pesos (CLP) cuesta eso usando la tasa correspondiente.
-                    3. FORMATO DE RESPUESTA (Obligatorio):
-                       ✅ *Cotización RyR*
-                       💰 **Monto solicitado:** [Cantidad original]
-                       ---
-                       🇨🇱 **Debes enviar:** [Monto] CLP
-                       📈 **Tasa aplicada:** [Tasa]
-                       💵 **Equivalente en USD:** [Monto] USD
-                       🇻🇪 **Reciben en Venezuela:** [Monto] Bs.
-                       ---
-                       ¿Deseas los datos para transferir?`
+                    content: `Eres el experto en cambios de Remesas RyR. 
+                    DATOS: ${infoTasas}.
+
+                    INSTRUCCIONES DE INTERPRETACIÓN:
+                    - "mil" o "k" equivalen a 000 (Ej: "20 mil" = 20000).
+                    - "luka" o "luca" equivalen a 1000 CLP.
+                    - Si el usuario dice "20mil bs", entiende que son 20,000 Bolívares.
+
+                    INSTRUCCIONES DE CÁLCULO:
+                    - Si piden BS: Primero divide BS / BCV para tener USD. Luego calcula cuántos CLP se necesitan para esos USD usando la tasa del Excel.
+                    - Si piden USD: Calcula cuántos CLP se necesitan y cuántos BS recibirá.
+                    - SIEMPRE indica el monto en PESOS CHILENOS (CLP) que el cliente debe pagar.
+
+                    FORMATO DE RESPUESTA:
+                    ✅ *Cotización RyR*
+                    💰 **Monto:** [Monto solicitado]
+                    ---
+                    🇨🇱 **Envías:** [Monto] CLP
+                    📈 **Tasa:** [Tasa usada]
+                    💵 **Equivalente:** [Monto] USD
+                    🇻🇪 **Reciben:** [Monto] Bs.
+                    ---
+                    ¿Te gustaría que te envíe los datos de transferencia?`
                 },
                 { role: "user", content: userMsg }
             ],
-            temperature: 0.1 // Esto hace que sea más preciso y menos "creativo"
+            temperature: 0
         });
 
         res.json({ replies: [{ message: completion.choices[0].message.content }] });
 
     } catch (e) {
-        res.json({ replies: [{ message: "⚠️ Hola! Indica el monto y la moneda para darte el valor exacto." }] });
+        res.json({ replies: [{ message: "Hola! Por favor indica el monto y la moneda para cotizarte de inmediato. Ejemplo: 20 mil pesos." }] });
     }
 });
 
