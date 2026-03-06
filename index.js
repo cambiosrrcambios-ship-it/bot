@@ -24,80 +24,81 @@ app.post('/', async (req, res) => {
         const T_250K = limpiarExcel(columnas[3]);
         const BCV    = limpiarExcel(columnas[5]);
 
-        // 1. CAPTURAR EL MENSAJE (DEBUG INCLUIDO)
+        // 1. OBTENER EL TEXTO
         let raw = "";
-        // Buscamos en todas las cajas posibles donde AutoResponder guarda el texto
         if (req.body.query && req.body.query.message) raw = req.body.query.message;
         else if (req.body.message) raw = req.body.message;
-        else if (req.body.text) raw = req.body.text;
+        else raw = req.body.text || "";
         
-        raw = String(raw).toLowerCase().trim();
+        let texto = String(raw).toLowerCase().trim();
 
-        // --- INICIO DE LÓGICA DE EXTRACCIÓN MEJORADA ---
+        // 2. EXTRAER EL NÚMERO (Paso a paso)
+        // Primero quitamos los puntos de miles para que "10.000" sea "10000"
+        let textoSinPuntos = texto.replace(/\./g, '');
+        let match = textoSinPuntos.match(/\d+/);
         
-        // Eliminamos los puntos de miles para que "10.000" sea "10000"
-        let textoLimpio = raw.replace(/\./g, '');
-        
-        // Buscamos el primer número que aparezca
-        let match = textoLimpio.match(/\d+/);
-        let montoEncontrado = match ? parseFloat(match[0]) : 0;
-
-        // Si dice "mil" y el número es bajo (como 10), lo multiplicamos
-        if (raw.includes("mil") && montoEncontrado < 1000) {
-            montoEncontrado = montoEncontrado * 1000;
+        if (!match) {
+            return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        // --- FIN DE LÓGICA ---
+        let montoBase = parseFloat(match[0]);
 
-        if (montoEncontrado === 0) {
-            return res.json({ 
-                replies: [{ message: `DEBUG: Recibí "${raw}", pero no detecté números. Intenta poner: 10000 pesos.` }] 
-            });
+        // 3. LOGICA DEL "MIL" (Súper importante)
+        // Si el usuario escribió "10 mil", el montoBase es 10. Lo convertimos a 10000.
+        if (texto.includes("mil") && montoBase < 1000) {
+            montoBase = montoBase * 1000;
         }
 
+        // 4. DETECTAR MONEDA
         let moneda = "";
-        if (raw.includes("pesos") || raw.includes("clp")) moneda = "CLP";
-        else if (raw.includes("bs") || raw.includes("bolivares") || raw.includes("bolívares")) moneda = "BS";
-        else if (raw.includes("usd") || raw.includes("dolar") || raw.includes("$")) moneda = "USD";
+        if (texto.includes("peso") || texto.includes("clp")) moneda = "CLP";
+        else if (texto.includes("bs") || texto.includes("bolivar")) moneda = "BS";
+        else if (texto.includes("usd") || texto.includes("dolar") || texto.includes("$")) moneda = "USD";
 
         if (!moneda) {
-            return res.json({ 
-                replies: [{ message: `Detecté el monto ${montoEncontrado}, pero no sé si son Pesos o Dólares. ¿Podrías aclararlo?` }] 
-            });
+            return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        // Cálculos
-        let dlar, clp, bs, resp;
+        // 5. CÁLCULOS (Aquí es donde la magia ocurre)
+        let dlar, clp, bs, resp, tasaUsada;
         const bcv_f = BCV.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         if (moneda === "CLP") {
-            clp = montoEncontrado;
-            let t = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
-            dlar = (clp * t) / BCV;
+            clp = montoBase;
+            // Seleccionamos tasa según el monto ya multiplicado (ej: 10000)
+            tasaUsada = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
+            dlar = (clp * tasaUsada) / BCV;
             bs = dlar * BCV;
-            resp = `✅ *Cálculo RyR*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${t}\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
+            
+            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${tasaUsada}\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
         } 
         else if (moneda === "BS") {
-            bs = montoEncontrado;
+            bs = montoBase;
             dlar = bs / BCV;
-            let t = (dlar * BCV / T_BASE) >= 250000 ? T_250K : ((dlar * BCV / T_BASE) >= 60000 ? T_60K : T_BASE);
-            clp = (dlar * BCV) / t;
-            resp = `✅ *Cálculo RyR*\n\n🇻🇪 Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇨🇱 *Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
+            // Para saber la tasa, proyectamos a CLP primero
+            let clpProyectado = (dlar * BCV) / T_BASE;
+            tasaUsada = clpProyectado >= 250000 ? T_250K : (clpProyectado >= 60000 ? T_60K : T_BASE);
+            clp = (dlar * BCV) / tasaUsada;
+            
+            resp = `✅ *Cálculo RyR (Desde Bolívares)*\n\n🇻🇪 Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇨🇱 *Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
         } 
         else {
-            dlar = montoEncontrado;
+            dlar = montoBase;
             bs = dlar * BCV;
-            let t = (bs / T_BASE) >= 250000 ? T_250K : ((bs / T_BASE) >= 60000 ? T_60K : T_BASE);
-            clp = bs / t;
-            resp = `✅ *Cálculo RyR*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📈 Dólar BCV: ${bcv_f} Bs.\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
+            // Proyectamos a CLP para elegir la tasa correcta
+            let clpProyectado = bs / T_BASE;
+            tasaUsada = clpProyectado >= 250000 ? T_250K : (clpProyectado >= 60000 ? T_60K : T_BASE);
+            clp = bs / tasaUsada;
+
+            resp = `✅ *Cálculo RyR (Desde Dólares)*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📈 Dólar BCV: ${bcv_f} Bs.\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
         }
 
         return res.json({ replies: [{ message: resp }] });
 
     } catch (e) {
-        return res.json({ replies: [{ message: "⚠️ Error en el servidor o Excel. Revisa los datos." }] });
+        return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Activo"));
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Optimizado"));
