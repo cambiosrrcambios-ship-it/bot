@@ -19,7 +19,6 @@ const limpiarUsuario = (texto) => {
     let t = texto.toLowerCase();
     let n = t.replace(/[^0-9]/g, ''); 
     let monto = parseFloat(n) || 0;
-    // Si el usuario escribió "mil" (ej: 10mil), multiplicamos por 1000
     if (t.includes('mil') && monto < 1000) monto = monto * 1000;
     return monto;
 };
@@ -39,58 +38,57 @@ app.post('/', async (req, res) => {
         if (req.body.query && req.body.query.message) raw = String(req.body.query.message).toLowerCase();
         else raw = String(req.body.message || req.body.text || "").toLowerCase();
 
-        // Buscamos el número
         let numMatch = raw.match(/\d+([\d.]*)/);
         
         if (!numMatch || raw.trim() === "") {
-            return res.json({ replies: [{ message: "¡Hola! 👋 Para ayudarte, indica un monto y la moneda.\n\nEjemplo: 20 usd, 50mil pesos o 10.000 bs." }] });
+            return res.json({ replies: [{ message: "¡Hola! 👋 Indica un monto y la moneda.\nEjemplo: 20 usd, 50mil pesos o 10.000 bs." }] });
         }
 
         let monto = limpiarUsuario(raw);
-        
-        // --- VALIDACIÓN DE MONEDA ---
         let esBs = /bs|bolivares|bolívares/i.test(raw);
         let esPesos = /pesos|clp|chilenos|cl/i.test(raw);
         let esUsd = /usd|dolar|dólar|dolares|dólares|\$/i.test(raw);
 
-        // Si el usuario NO puso ninguna moneda, le pedimos que aclare
         if (!esBs && !esPesos && !esUsd) {
             return res.json({ 
-                replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] 
+                replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares*." }] 
             });
         }
 
         let dlar, clp, bs, resp;
+        const bcv_formateado = BCV.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         if (esPesos) {
             clp = monto;
             let t = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
             dlar = (clp * t) / BCV;
             bs = dlar * BCV;
-            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${t}\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
-        } 
-        else if (esBs) {
+            
+            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa RyR: ${t}\n📈 Dólar BCV: ${bcv_formateado} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
+
+        } else if (esBs) {
             bs = monto;
             dlar = bs / BCV;
             let t = (dlar * BCV / T_BASE) >= 250000 ? T_250K : ((dlar * BCV / T_BASE) >= 60000 ? T_60K : T_BASE);
             clp = (dlar * BCV) / t;
-            resp = `✅ *Cálculo RyR (Desde Bolívares)*\n\n🇻🇪 Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📊 Tasa BCV: ${BCV}\n💵 USD: ${dlar.toFixed(2)}\n\n🇨🇱 *Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
-        } 
-        else {
-            // CASO USD
+
+            resp = `✅ *Cálculo RyR (Desde Bolívares)*\n\n🇻🇪 Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📈 Dólar BCV: ${bcv_formateado} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇨🇱 *Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
+
+        } else {
             dlar = monto;
             bs = dlar * BCV;
             let t = (bs / T_BASE) >= 250000 ? T_250K : ((bs / T_BASE) >= 60000 ? T_60K : T_BASE);
             clp = bs / t;
-            resp = `✅ *Cálculo RyR (Desde Dólares)*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📊 Tasa BCV: ${BCV}\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
+
+            resp = `✅ *Cálculo RyR (Desde Dólares)*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📈 Dólar BCV: ${bcv_formateado} Bs.\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
         }
 
         return res.json({ replies: [{ message: resp }] });
 
     } catch (error) {
-        return res.json({ replies: [{ message: "❌ Error: Por favor escribe el monto de nuevo." }] });
+        return res.json({ replies: [{ message: "❌ Error: Escribe el monto de nuevo." }] });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Listo"));
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Actualizado"));
