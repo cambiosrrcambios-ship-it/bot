@@ -14,7 +14,16 @@ const limpiarExcel = (v) => {
 };
 
 app.post('/', async (req, res) => {
+    // 1. FILTRO DE SEGURIDAD (SOLO CHILE)
+    let remoteId = req.body.query?.sender || req.body.sender || "";
+    
+    // Si el remitente NO es de Chile, ignoramos el mensaje por completo
+    if (remoteId !== "" && !remoteId.startsWith("56") && !remoteId.startsWith("+56")) {
+        return res.json({ replies: [] }); 
+    }
+
     try {
+        // 2. OBTENER DATOS DE GOOGLE SHEETS
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const columnas = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -24,7 +33,7 @@ app.post('/', async (req, res) => {
         const T_250K = limpiarExcel(columnas[3]);
         const BCV    = limpiarExcel(columnas[5]);
 
-        // 1. OBTENER EL TEXTO
+        // 3. CAPTURAR EL TEXTO DEL MENSAJE
         let raw = "";
         if (req.body.query && req.body.query.message) raw = req.body.query.message;
         else if (req.body.message) raw = req.body.message;
@@ -32,64 +41,56 @@ app.post('/', async (req, res) => {
         
         let texto = String(raw).toLowerCase().trim();
 
-        // 2. EXTRAER EL NÚMERO (Paso a paso)
-        // Primero quitamos los puntos de miles para que "10.000" sea "10000"
-        let textoSinPuntos = texto.replace(/\./g, '');
+        // 4. EXTRAER Y CORREGIR EL MONTO (Ej: "10 mil" o "10.000")
+        let textoSinPuntos = texto.replace(/\./g, ''); // "10.000" -> "10000"
         let match = textoSinPuntos.match(/\d+/);
         
         if (!match) {
             return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        let montoBase = parseFloat(match[0]);
+        let montoFinal = parseFloat(match[0]);
 
-        // 3. LOGICA DEL "MIL" (Súper importante)
-        // Si el usuario escribió "10 mil", el montoBase es 10. Lo convertimos a 10000.
-        if (texto.includes("mil") && montoBase < 1000) {
-            montoBase = montoBase * 1000;
+        // Si dice "mil" y el número es pequeño, multiplicamos por 1000
+        if (texto.includes("mil") && montoFinal < 1000) {
+            montoFinal = montoFinal * 1000;
         }
 
-        // 4. DETECTAR MONEDA
+        // 5. DETECTAR MONEDA
         let moneda = "";
-        if (texto.includes("peso") || texto.includes("clp")) moneda = "CLP";
-        else if (texto.includes("bs") || texto.includes("bolivar")) moneda = "BS";
-        else if (texto.includes("usd") || texto.includes("dolar") || texto.includes("$")) moneda = "USD";
+        if (texto.includes("peso") || texto.includes("clp") || texto.includes("chile")) moneda = "CLP";
+        else if (texto.includes("bs") || texto.includes("bolivar") || texto.includes("bolívaar")) moneda = "BS";
+        else if (texto.includes("usd") || texto.includes("dolar") || texto.includes("dólar") || texto.includes("$")) moneda = "USD";
 
         if (!moneda) {
             return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        // 5. CÁLCULOS (Aquí es donde la magia ocurre)
-        let dlar, clp, bs, resp, tasaUsada;
+        // 6. REALIZAR CÁLCULOS
+        let dlar, clp, bs, resp, tasaActual;
         const bcv_f = BCV.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         if (moneda === "CLP") {
-            clp = montoBase;
-            // Seleccionamos tasa según el monto ya multiplicado (ej: 10000)
-            tasaUsada = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
-            dlar = (clp * tasaUsada) / BCV;
+            clp = montoFinal;
+            tasaActual = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
+            dlar = (clp * tasaActual) / BCV;
             bs = dlar * BCV;
-            
-            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${tasaUsada}\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
+            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${tasaActual}\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
         } 
         else if (moneda === "BS") {
-            bs = montoBase;
+            bs = montoFinal;
             dlar = bs / BCV;
-            // Para saber la tasa, proyectamos a CLP primero
-            let clpProyectado = (dlar * BCV) / T_BASE;
-            tasaUsada = clpProyectado >= 250000 ? T_250K : (clpProyectado >= 60000 ? T_60K : T_BASE);
-            clp = (dlar * BCV) / tasaUsada;
-            
+            let clpRef = (dlar * BCV) / T_BASE;
+            tasaActual = clpRef >= 250000 ? T_250K : (clpRef >= 60000 ? T_60K : T_BASE);
+            clp = (dlar * BCV) / tasaActual;
             resp = `✅ *Cálculo RyR (Desde Bolívares)*\n\n🇻🇪 Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇨🇱 *Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
         } 
         else {
-            dlar = montoBase;
+            dlar = montoFinal;
             bs = dlar * BCV;
-            // Proyectamos a CLP para elegir la tasa correcta
-            let clpProyectado = bs / T_BASE;
-            tasaUsada = clpProyectado >= 250000 ? T_250K : (clpProyectado >= 60000 ? T_60K : T_BASE);
-            clp = bs / tasaUsada;
-
+            let clpRef = bs / T_BASE;
+            tasaActual = clpRef >= 250000 ? T_250K : (clpRef >= 60000 ? T_60K : T_BASE);
+            clp = bs / tasaActual;
             resp = `✅ *Cálculo RyR (Desde Dólares)*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📈 Dólar BCV: ${bcv_f} Bs.\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
         }
 
@@ -101,4 +102,4 @@ app.post('/', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Optimizado"));
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR con Filtro de Seguridad"));
