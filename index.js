@@ -12,10 +12,7 @@ app.post('/', async (req, res) => {
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
         if (!userMsg) return res.json({ replies: [] });
 
-        if (!/\d/.test(userMsg) && !userMsg.toLowerCase().includes("tasa")) {
-             return res.json({ replies: [] });
-        }
-
+        // 1. Obtener Tasas del Excel
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -25,42 +22,52 @@ app.post('/', async (req, res) => {
         const t250k = parseFloat(col[3].replace(',', '.'));
         const tBCV = parseFloat(col[5].replace(',', '.'));
 
-        const completion = await openai.chat.completions.create({
+        // 2. Le pedimos a la IA que solo extraiga el NÚMERO y la MONEDA que pide el cliente
+        const extraction = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
-                { 
-                    role: "system", 
-                    content: `Eres un sistema de cotización automático para Remesas RyR. 
-                    NO des explicaciones, NO pongas "Paso A" o "Paso B". Solo entrega el formato final.
-
-                    TASAS: Base:${tBase}, >60k:${t60k}, >250k:${t250k}, BCV:${tBCV}.
-
-                    MATEMÁTICA INTERNA:
-                    - Si piden CLP: BS = CLP * Tasa_Excel | USD = BS / BCV.
-                    - Si piden BS: CLP = BS / Tasa_Excel | USD = BS / BCV.
-                    - Si piden USD: BS = USD * BCV | CLP = BS / Tasa_Excel.
-
-                    REGLA DE TASA:
-                    Calcula el monto en CLP. Si CLP < 60000 usa ${tBase}. Si CLP >= 60000 usa ${t60k}. Si CLP >= 250000 usa ${t250k}.
-
-                    RESPONDE EXCLUSIVAMENTE ASÍ:
-                    ✅ *Cotización RyR*
-                    💰 **Monto solicitado:** [Monto original]
-                    ---
-                    🇨🇱 **Envías:** [Resultado] CLP
-                    📈 **Tasa aplicada:** [Tasa]
-                    💵 **Equivalente:** [Resultado] USD
-                    🇻🇪 **Reciben:** [Resultado] Bs.
-                    ---
-                    ¿Deseas los datos para transferir?`
-                },
+                { role: "system", content: "Extrae el monto y la moneda del mensaje del usuario. Responde solo en JSON: {\"monto\": 10, \"moneda\": \"USD\"}. Monedas posibles: CLP, BS, USD." },
                 { role: "user", content: userMsg }
             ],
             temperature: 0
         });
 
-        let respuestaIA = completion.choices[0].message.content;
-        return res.json({ replies: [{ message: respuestaIA }] });
+        const data = JSON.parse(extraction.choices[0].message.content);
+        let monto = data.monto;
+        let moneda = data.moneda;
+        
+        let clp, bs, usd, tasaUsada;
+
+        // 3. HACEMOS NOSOTROS LA MATEMÁTICA (No la IA)
+        if (moneda === "USD") {
+            bs = monto * tBCV;
+            tasaUsada = bs / tBase < 60000 ? tBase : (bs / t60k < 250000 ? t60k : t250k);
+            clp = bs / tasaUsada;
+            usd = monto;
+        } else if (moneda === "BS") {
+            bs = monto;
+            tasaUsada = bs / tBase < 60000 ? tBase : (bs / t60k < 250000 ? t60k : t250k);
+            clp = bs / tasaUsada;
+            usd = bs / tBCV;
+        } else { // CLP
+            clp = monto;
+            tasaUsada = clp < 60000 ? tBase : (clp < 250000 ? t60k : t250k);
+            bs = clp * tasaUsada;
+            usd = bs / tBCV;
+        }
+
+        // 4. La IA ahora SOLO redacta el mensaje final con los números ya calculados
+        const finalMsg = `✅ *Cotización RyR*
+💰 **Monto solicitado:** ${monto} ${moneda}
+---
+🇨🇱 **Envías:** ${clp.toLocaleString('es-CL', {maximumFractionDigits: 0})} CLP
+📈 **Tasa aplicada:** ${tasaUsada}
+💵 **Equivalente:** ${usd.toFixed(2)} USD
+🇻🇪 **Reciben:** ${bs.toLocaleString('es-VE', {maximumFractionDigits: 2})} Bs.
+---
+¿Deseas los datos para transferir?`;
+
+        return res.json({ replies: [{ message: finalMsg }] });
 
     } catch (e) {
         return res.json({ replies: [] });
