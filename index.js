@@ -12,7 +12,6 @@ app.post('/', async (req, res) => {
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
         if (!userMsg) return res.json({ replies: [] });
 
-        // Filtro de ahorro: Solo procesa si hay números
         if (!/\d/.test(userMsg) && !userMsg.toLowerCase().includes("tasa")) {
              return res.json({ replies: [] });
         }
@@ -31,39 +30,27 @@ app.post('/', async (req, res) => {
             messages: [
                 { 
                     role: "system", 
-                    content: `Eres el cotizador de Remesas RyR. 
-                    Tasa Base (B2): ${tBase}
-                    Tasa >60k (C2): ${t60k}
-                    Tasa >250k (D2): ${t250k}
-                    Tasa BCV (F2): ${tBCV}
+                    content: `Eres un sistema de cotización automático para Remesas RyR. 
+                    NO des explicaciones, NO pongas "Paso A" o "Paso B". Solo entrega el formato final.
 
-                    INSTRUCCIONES DE CÁLCULO ESTRICTAS:
+                    TASAS: Base:${tBase}, >60k:${t60k}, >250k:${t250k}, BCV:${tBCV}.
 
-                    1. SI PREGUNTAN POR DÓLARES (USD):
-                       - Paso A (Pesos): (Monto_USD * ${tBCV}) / Tasa_Excel = Envías CLP.
-                       - Paso B (Bolívares): Monto_USD * ${tBCV} = Reciben BS.
+                    MATEMÁTICA INTERNA:
+                    - Si piden CLP: BS = CLP * Tasa_Excel | USD = BS / BCV.
+                    - Si piden BS: CLP = BS / Tasa_Excel | USD = BS / BCV.
+                    - Si piden USD: BS = USD * BCV | CLP = BS / Tasa_Excel.
 
-                    2. SI PREGUNTAN POR BOLÍVARES (BS):
-                       - Paso A (Pesos): Monto_BS / Tasa_Excel = Envías CLP.
-                       - Paso B (Dólares): Monto_BS / ${tBCV} = Equivalente USD.
+                    REGLA DE TASA:
+                    Calcula el monto en CLP. Si CLP < 60000 usa ${tBase}. Si CLP >= 60000 usa ${t60k}. Si CLP >= 250000 usa ${t250k}.
 
-                    3. SI PREGUNTAN POR PESOS (CLP):
-                       - Paso A (Bolívares): Monto_CLP * Tasa_Excel = Reciben BS.
-                       - Paso B (Dólares): Resultado_BS / ${tBCV} = Equivalente USD.
-
-                    *PARA ELEGIR TASA_EXCEL:* Calcula primero cuántos CLP resultan. 
-                    Si es menos de 60.000 usa ${tBase}. 
-                    Si es entre 60.000 y 249.999 usa ${t60k}. 
-                    Si es 250.000 o más usa ${t250k}.
-
-                    FORMATO DE RESPUESTA:
+                    RESPONDE EXCLUSIVAMENTE ASÍ:
                     ✅ *Cotización RyR*
                     💰 **Monto solicitado:** [Monto original]
                     ---
-                    🇨🇱 **Envías:** [Monto] CLP
+                    🇨🇱 **Envías:** [Resultado] CLP
                     📈 **Tasa aplicada:** [Tasa]
-                    💵 **Equivalente:** [Monto] USD
-                    🇻🇪 **Reciben:** [Monto] Bs.
+                    💵 **Equivalente:** [Resultado] USD
+                    🇻🇪 **Reciben:** [Resultado] Bs.
                     ---
                     ¿Deseas los datos para transferir?`
                 },
@@ -72,7 +59,7 @@ app.post('/', async (req, res) => {
             temperature: 0
         });
 
-        const respuestaIA = completion.choices[0].message.content;
+        let respuestaIA = completion.choices[0].message.content;
         return res.json({ replies: [{ message: respuestaIA }] });
 
     } catch (e) {
