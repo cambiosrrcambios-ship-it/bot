@@ -14,28 +14,21 @@ const limpiarExcel = (v) => {
 };
 
 app.post('/', async (req, res) => {
-    // --- 1. FILTRO DE SEGURIDAD (CHILE +56) ---
-    // Intentamos obtener el número de varias fuentes que envía AutoResponder
-    let senderName = req.body.query?.sender || ""; // Puede ser "Soluciones SR"
-    let jid = req.body.query?.remoteJid || "";     // Suele ser "56912345678@s.whatsapp.net"
-    
-    // Extraemos solo los dígitos de ambos
-    let numDesdeSender = senderName.replace(/\D/g, '');
-    let numDesdeJid = jid.replace(/\D/g, '');
-    
-    // Elegimos el que parezca un número válido
-    let numeroFinal = numDesdeSender.startsWith('56') ? numDesdeSender : numDesdeJid;
+    // --- 1. FILTRO DE SEGURIDAD ULTRA-ESTRICTO ---
+    const query = req.body.query || {};
+    const sender = String(query.sender || "").replace(/\D/g, ''); // Solo números
+    const jid = String(query.remoteJid || "").replace(/\D/g, ''); // Solo números
 
-    // Si tenemos un número y NO empieza por 56, ignoramos.
-    // Si es un nombre (como "Soluciones SR") y no pudimos hallar el número en JID, 
-    // lo dejamos pasar por si acaso para que no se quede mudo contigo.
-    if (numeroFinal !== "" && !numeroFinal.startsWith("56")) {
-        console.log("Mensaje bloqueado: Número de fuera de Chile (" + numeroFinal + ")");
+    // Verificamos si alguno de los dos campos empieza por 56
+    const esChile = sender.startsWith('56') || jid.startsWith('56');
+
+    // SI NO ES DE CHILE, NO RESPONDEMOS NADA
+    if (!esChile) {
+        console.log(`Bloqueado: Intento desde número no chileno.`);
         return res.json({ replies: [] });
     }
 
     try {
-        // --- 2. DATOS DE EXCEL ---
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const columnas = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -45,29 +38,26 @@ app.post('/', async (req, res) => {
         const T_250K = limpiarExcel(columnas[3]);
         const BCV    = limpiarExcel(columnas[5]);
 
-        // --- 3. PROCESAR MENSAJE ---
-        let raw = req.body.query?.message || req.body.message || req.body.text || "";
+        // --- 2. CAPTURAR EL MENSAJE COMPLETO ---
+        let raw = query.message || req.body.message || "";
         let texto = String(raw).toLowerCase().trim();
 
-        // Extraer número quitando puntos (ej: 10.000 -> 10000)
-        let match = texto.replace(/\./g, '').match(/\d+/);
+        // --- 3. EXTRAER EL MONTO ---
+        // Quitamos puntos para que "10.000" sea "10000"
+        let soloDigitos = texto.replace(/\./g, '').match(/\d+/);
         
-        if (!match) {
+        if (!soloDigitos) {
             return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        let monto = parseFloat(match[0]);
+        let monto = parseFloat(soloDigitos[0]);
+        if (texto.includes("mil") && monto < 1000) monto *= 1000;
 
-        // Manejo de "mil" (ej: "10 mil")
-        if (texto.includes("mil") && monto < 1000) {
-            monto = monto * 1000;
-        }
-
-        // --- 4. DETECTAR MONEDA ---
+        // --- 4. DETECTAR MONEDA (Búsqueda en toda la frase) ---
         let moneda = "";
-        if (texto.includes("peso") || texto.includes("clp")) moneda = "CLP";
-        else if (texto.includes("bs") || texto.includes("bolivar")) moneda = "BS";
-        else if (texto.includes("usd") || texto.includes("dolar") || texto.includes("$")) moneda = "USD";
+        if (/peso|clp|chile/i.test(texto)) moneda = "CLP";
+        else if (/bs|bolivar|bolívar/i.test(texto)) moneda = "BS";
+        else if (/usd|dolar|dólar|\$/i.test(texto)) moneda = "USD";
 
         if (!moneda) {
             return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
@@ -109,4 +99,4 @@ app.post('/', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Ejecutándose"));
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Protegido"));
