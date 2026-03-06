@@ -9,53 +9,56 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 
 app.post('/', async (req, res) => {
     try {
-        // 1. CAPTURAR EL MENSAJE (Sin filtros de números)
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
-        
-        if (!userMsg || userMsg.trim() === "") {
-            return res.json({ replies: [] });
-        }
+        if (!userMsg) return res.json({ replies: [] });
 
-        // 2. OBTENER TASAS DEL EXCEL
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
 
-        const infoTasas = `
-        TASAS RYR:
-        - Base: ${col[1]}
-        - 60k+: ${col[2]}
-        - 250k+: ${col[3]}
-        - BCV: ${col[5]}
-        `;
+        // Preparamos las variables del Excel para la IA
+        const tasaBase = parseFloat(col[1]);
+        const tasa60k = parseFloat(col[2]);
+        const tasa250k = parseFloat(col[3]);
+        const tasaBCV = parseFloat(col[5]);
 
-        // 3. CHATGPT PROCESA TODO (Números y letras)
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 { 
                     role: "system", 
-                    content: `Eres el experto de Remesas RyR. 
-                    DATOS: ${infoTasas}.
+                    content: `Eres el experto en Remesas RyR. Solo respondes sobre remesas. 
+                    Si el mensaje es un saludo, responde amable. Si no es sobre remesas, responde: IGNORE_MESSAGE.
+
+                    TUS HERRAMIENTAS (Tasas de hoy):
+                    - Tasa Base: ${tasaBase}
+                    - Tasa >60k: ${tasa60k}
+                    - Tasa >250k: ${tasa250k}
+                    - Tasa BCV (Dólar): ${tasaBCV}
+
+                    TUS FÓRMULAS OBLIGATORIAS:
+                    1. SI PREGUNTAN EN PESOS (CLP):
+                       - Cantidad USD = (Monto CLP * Tasa_Excel) / Tasa_BCV.
+                       - Cantidad Bs = (Monto CLP * Tasa_Excel).
                     
-                    ENTIENDE EL LENGUAJE:
-                    - "mil", "k", "kilos" = 000 (Ej: 20mil = 20000).
-                    - "luca", "luka" = 1000 CLP.
-                    
-                    REGLA DE CÁLCULO:
-                    - Si piden Bolívares: Divide por BCV para sacar USD, luego calcula CLP.
-                    - SIEMPRE indica cuánto debe enviar el cliente en PESOS CHILENOS (CLP).
-                    
-                    FORMATO:
+                    2. SI PREGUNTAN EN BOLÍVARES (BS):
+                       - Cantidad USD = Monto BS / Tasa_BCV.
+                       - Cantidad CLP = Monto BS / Tasa_Excel. (Usa la tasa según el monto resultante en CLP).
+
+                    3. SI PREGUNTAN EN DÓLARES (USD/$):
+                       - Cantidad BS = Monto USD * Tasa_BCV.
+                       - Cantidad CLP = (Monto USD * Tasa_BCV) / Tasa_Excel.
+
+                    FORMATO DE RESPUESTA:
                     ✅ *Cotización RyR*
-                    💰 **Monto:** [Monto solicitado]
+                    💰 **Monto solicitado:** [Monto original]
                     ---
-                    🇨🇱 **Envías:** [Monto] CLP
-                    📈 **Tasa:** [Tasa]
-                    💵 **Equivalente:** [Monto] USD
-                    🇻🇪 **Reciben:** [Monto] Bs.
+                    🇨🇱 **Envías:** [Resultado] CLP
+                    📈 **Tasa aplicada:** [La que usaste]
+                    💵 **Equivalente:** [Resultado] USD
+                    🇻🇪 **Reciben:** [Resultado] Bs.
                     ---
-                    ¿Te envío los datos para el depósito?`
+                    ¿Deseas los datos para transferir?`
                 },
                 { role: "user", content: userMsg }
             ],
@@ -63,12 +66,12 @@ app.post('/', async (req, res) => {
         });
 
         const respuestaIA = completion.choices[0].message.content;
+        if (respuestaIA.includes("IGNORE_MESSAGE")) return res.json({ replies: [] });
+
         return res.json({ replies: [{ message: respuestaIA }] });
 
     } catch (e) {
-        console.error("Error:", e);
-        // Si no entiende el monto o algo falla, enviamos el mensaje de ayuda
-        return res.json({ replies: [{ message: "⚠️ Por favor, indícame el monto y la moneda (ej: 20 mil pesos o 50 dólares) para darte el valor exacto." }] });
+        return res.json({ replies: [] });
     }
 });
 
