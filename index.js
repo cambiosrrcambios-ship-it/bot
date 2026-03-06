@@ -9,17 +9,15 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 
 app.post('/', async (req, res) => {
     try {
-        // 1. CAPTURAR MENSAJE
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
         if (!userMsg) return res.json({ replies: [] });
 
-        // --- FILTRO DE AHORRO (Solo procesa si hay números) ---
+        // --- FILTRO DE AHORRO ---
         if (!/\d/.test(userMsg)) {
-            console.log("Mensaje sin números ignorado (Ahorro de saldo)");
             return res.json({ replies: [] }); 
         }
 
-        // 2. OBTENER TASAS DEL EXCEL
+        // 1. OBTENER TASAS
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -29,31 +27,49 @@ app.post('/', async (req, res) => {
         const t250k = parseFloat(col[3].replace(',', '.'));
         const tBCV = parseFloat(col[5].replace(',', '.'));
 
-        // 3. LLAMADA A OPENAI
+        // 2. CONSULTA A LA IA
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 { 
                     role: "system", 
-                    content: `Eres el cotizador experto de Remesas RyR. 
-                    TASAS: Base:${tBase}, >60k:${t60k}, >250k:${t250k}, BCV:${tBCV}.
+                    content: `Eres el cotizador de Remesas RyR. Tasas: Base:${tBase}, >60k:${t60k}, >250k:${t250k}, BCV:${tBCV}.
+                    Si el mensaje no es de dinero o tasas, responde: IGNORE.
+                    
+                    MATEMÁTICA:
+                    - BS a CLP: Monto_BS / Tasa_Excel.
+                    - BS a USD: Monto_BS / ${tBCV}.
+                    - CLP a BS: Monto_CLP * Tasa_Excel.
+                    - USD a BS: Monto_USD * ${tBCV}.
+                    - USD a CLP: (Monto_USD * ${tBCV}) / Tasa_Excel.
 
-                    REGLA DE SILENCIO: 
-                    - Si el mensaje no es sobre dinero o tasas, responde: IGNORE.
-
-                    REGLAS MATEMÁTICAS (ESTRICTAS):
-                    1. SI PIDEN BS: 
-                       - Envías (CLP) = Monto_BS / Tasa_Excel.
-                       - Equivalente (USD) = Monto_BS / ${tBCV}.
-                    2. SI PIDEN CLP: 
-                       - Reciben (BS) = Monto_CLP * Tasa_Excel.
-                       - Equivalente (USD) = (Monto_CLP * Tasa_Excel) / ${tBCV}.
-                    3. SI PIDEN USD: 
-                       - Reciben (BS) = Monto_USD * ${tBCV}.
-                       - Envías (CLP) = (Monto_USD * ${tBCV}) / Tasa_Excel.
-
-                    *Nota: Usa la tasa de Excel que corresponda según el monto en CLP resultante.*
-
-                    FORMATO DE RESPUESTA:
+                    FORMATO:
                     ✅ *Cotización RyR*
-                    💰 **
+                    💰 **Monto solicitado:** [Monto original]
+                    ---
+                    🇨🇱 **Envías:** [Resultado] CLP
+                    📈 **Tasa aplicada:** [Tasa]
+                    💵 **Equivalente:** [Resultado] USD
+                    🇻🇪 **Reciben:** [Resultado] Bs.
+                    ---
+                    ¿Deseas los datos para transferir?`
+                },
+                { role: "user", content: userMsg }
+            ],
+            temperature: 0
+        });
+
+        const respuestaIA = completion.choices[0].message.content;
+
+        if (respuestaIA.includes("IGNORE")) {
+            return res.json({ replies: [] });
+        }
+
+        return res.json({ replies: [{ message: respuestaIA }] });
+
+    } catch (e) {
+        return res.json({ replies: [] });
+    }
+});
+
+app.listen(process.env.PORT || 10000);
