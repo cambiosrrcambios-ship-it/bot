@@ -8,7 +8,6 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 const limpiar = (v) => {
     if (!v) return 0;
     let n = v.toString().replace(/[^0-9.,]/g, '');
-    if (!n) return 0;
     if (n.includes(',') && n.includes('.')) n = n.replace(/\./g, '').replace(',', '.');
     else if (n.includes(',')) n = n.replace(',', '.');
     return parseFloat(n) || 0;
@@ -16,76 +15,48 @@ const limpiar = (v) => {
 
 app.post('/', async (req, res) => {
     try {
-        // 1. OBTENER TASAS DESDE GOOGLE
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const columnas = filas[1].split(filas[1].includes(';') ? ';' : ',');
 
-        const T_BASE  = limpiar(columnas[1]);
-        const T_60K   = limpiar(columnas[2]);
-        const T_250K  = limpiar(columnas[3]);
-        const BCV     = limpiar(columnas[5]);
+        const T_BASE = limpiar(columnas[1]);
+        const BCV = limpiar(columnas[5]);
 
-        // 2. BUSCAR EL TEXTO (Aquí estaba el fallo)
-        // Revisamos el body completo para encontrar cualquier texto que el usuario haya enviado
+        // --- ESTO ES LO IMPORTANTE ---
+        // Vamos a enviarte de vuelta TODO lo que el bot recibe para ver dónde está el error
+        const cuerpoRecibido = JSON.stringify(req.body);
+        
         let raw = "";
-        
-        // Esta función busca texto en cualquier propiedad del JSON recibido
-        const buscarTexto = (obj) => {
-            for (let key in obj) {
-                if (typeof obj[key] === 'string' && obj[key].length > 1) return obj[key];
-                if (typeof obj[key] === 'object') {
-                    let res = buscarTexto(obj[key]);
-                    if (res) return res;
-                }
-            }
-            return "";
-        };
+        // Intentamos extraer el texto de los lugares más comunes
+        if (req.body.message) raw = req.body.message;
+        else if (req.body.text) raw = req.body.text;
+        else if (req.body.query) raw = req.body.query;
+        else if (req.body.content) raw = req.body.content;
 
-        raw = buscarTexto(req.body) || "";
-        console.log("Mensaje detectado:", raw);
+        let numMatch = String(raw).match(/\d+([\d.,]*)/);
 
-        // Intentar sacar el número
-        let numMatch = raw.match(/\d+([\d.,]*)/);
-        
-        if (!numMatch || raw === "") {
+        if (!numMatch) {
+            // Si falla, el bot te dirá qué recibió exactamente en el JSON
             return res.json({ 
-                replies: [{ message: "¡Hola! 💸 No logré entender el monto.\n\nEscribe por ejemplo: '20 usd' o '50000 pesos'." }] 
+                replies: [{ 
+                    message: `DEBUG: El bot recibió esto: ${cuerpoRecibido}. No encontré un número ahí.` 
+                }] 
             });
         }
 
-        // 3. CÁLCULOS
+        // Si encuentra el número, hace el cálculo normal (usando T_BASE por defecto para el ejemplo)
         let monto = limpiar(numMatch[0]);
-        let esBs = /bs|bolivares/i.test(raw);
-        let esPesos = /pesos|clp/i.test(raw);
-        let dlar, clp, bs, resp;
+        let dlar = /bs/i.test(raw) ? monto / BCV : monto;
+        let bs = dlar * BCV;
+        let clp = dlar * T_BASE;
 
-        if (esPesos) {
-            clp = monto;
-            let t = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
-            dlar = clp / t;
-            bs = dlar * BCV;
-            resp = `✅ *Cálculo RyR*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${t}\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
-        } else if (esBs) {
-            bs = monto;
-            dlar = bs / BCV;
-            let t = (dlar * T_BASE >= 250000) ? T_250K : (dlar * T_BASE >= 60000 ? T_60K : T_BASE);
-            clp = dlar * t;
-            resp = `✅ *Cálculo RyR*\n\n🇻🇪 Para recibir: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📊 Tasa BCV: ${BCV.toFixed(2)}\n💵 Equivale a: ${dlar.toFixed(2)} USD\n\n🇨🇱 *Debes enviar: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
-        } else {
-            dlar = monto;
-            let t = (dlar * T_BASE >= 250000) ? T_250K : (dlar * T_BASE >= 60000 ? T_60K : T_BASE);
-            clp = dlar * t;
-            bs = dlar * BCV;
-            resp = `✅ *Cálculo RyR*\n\n💵 Monto: ${dlar} USD\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
-        }
-
+        let resp = `✅ Detectado: ${monto}\nChile: ${Math.round(clp)} CLP\nVen: ${Math.round(bs)} Bs.`;
         return res.json({ replies: [{ message: resp }] });
 
     } catch (error) {
-        return res.json({ replies: [{ message: "⚠️ Error: " + error.message }] });
+        return res.json({ replies: [{ message: "Error: " + error.message }] });
     }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR en línea"));
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Listo"));
