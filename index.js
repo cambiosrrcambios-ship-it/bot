@@ -14,16 +14,28 @@ const limpiarExcel = (v) => {
 };
 
 app.post('/', async (req, res) => {
-    // 1. FILTRO DE SEGURIDAD (SOLO CHILE)
-    let remoteId = req.body.query?.sender || req.body.sender || "";
+    // --- 1. FILTRO DE SEGURIDAD (CHILE +56) ---
+    // Intentamos obtener el número de varias fuentes que envía AutoResponder
+    let senderName = req.body.query?.sender || ""; // Puede ser "Soluciones SR"
+    let jid = req.body.query?.remoteJid || "";     // Suele ser "56912345678@s.whatsapp.net"
     
-    // Si el remitente NO es de Chile, ignoramos el mensaje por completo
-    if (remoteId !== "" && !remoteId.startsWith("56") && !remoteId.startsWith("+56")) {
-        return res.json({ replies: [] }); 
+    // Extraemos solo los dígitos de ambos
+    let numDesdeSender = senderName.replace(/\D/g, '');
+    let numDesdeJid = jid.replace(/\D/g, '');
+    
+    // Elegimos el que parezca un número válido
+    let numeroFinal = numDesdeSender.startsWith('56') ? numDesdeSender : numDesdeJid;
+
+    // Si tenemos un número y NO empieza por 56, ignoramos.
+    // Si es un nombre (como "Soluciones SR") y no pudimos hallar el número en JID, 
+    // lo dejamos pasar por si acaso para que no se quede mudo contigo.
+    if (numeroFinal !== "" && !numeroFinal.startsWith("56")) {
+        console.log("Mensaje bloqueado: Número de fuera de Chile (" + numeroFinal + ")");
+        return res.json({ replies: [] });
     }
 
     try {
-        // 2. OBTENER DATOS DE GOOGLE SHEETS
+        // --- 2. DATOS DE EXCEL ---
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const columnas = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -33,64 +45,59 @@ app.post('/', async (req, res) => {
         const T_250K = limpiarExcel(columnas[3]);
         const BCV    = limpiarExcel(columnas[5]);
 
-        // 3. CAPTURAR EL TEXTO DEL MENSAJE
-        let raw = "";
-        if (req.body.query && req.body.query.message) raw = req.body.query.message;
-        else if (req.body.message) raw = req.body.message;
-        else raw = req.body.text || "";
-        
+        // --- 3. PROCESAR MENSAJE ---
+        let raw = req.body.query?.message || req.body.message || req.body.text || "";
         let texto = String(raw).toLowerCase().trim();
 
-        // 4. EXTRAER Y CORREGIR EL MONTO (Ej: "10 mil" o "10.000")
-        let textoSinPuntos = texto.replace(/\./g, ''); // "10.000" -> "10000"
-        let match = textoSinPuntos.match(/\d+/);
+        // Extraer número quitando puntos (ej: 10.000 -> 10000)
+        let match = texto.replace(/\./g, '').match(/\d+/);
         
         if (!match) {
             return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        let montoFinal = parseFloat(match[0]);
+        let monto = parseFloat(match[0]);
 
-        // Si dice "mil" y el número es pequeño, multiplicamos por 1000
-        if (texto.includes("mil") && montoFinal < 1000) {
-            montoFinal = montoFinal * 1000;
+        // Manejo de "mil" (ej: "10 mil")
+        if (texto.includes("mil") && monto < 1000) {
+            monto = monto * 1000;
         }
 
-        // 5. DETECTAR MONEDA
+        // --- 4. DETECTAR MONEDA ---
         let moneda = "";
-        if (texto.includes("peso") || texto.includes("clp") || texto.includes("chile")) moneda = "CLP";
-        else if (texto.includes("bs") || texto.includes("bolivar") || texto.includes("bolívaar")) moneda = "BS";
-        else if (texto.includes("usd") || texto.includes("dolar") || texto.includes("dólar") || texto.includes("$")) moneda = "USD";
+        if (texto.includes("peso") || texto.includes("clp")) moneda = "CLP";
+        else if (texto.includes("bs") || texto.includes("bolivar")) moneda = "BS";
+        else if (texto.includes("usd") || texto.includes("dolar") || texto.includes("$")) moneda = "USD";
 
         if (!moneda) {
             return res.json({ replies: [{ message: "⚠️ Por favor, indica si el monto es en *Pesos, Dólares o Bolívares* para poder realizar el cálculo correctamente." }] });
         }
 
-        // 6. REALIZAR CÁLCULOS
-        let dlar, clp, bs, resp, tasaActual;
+        // --- 5. CÁLCULOS ---
+        let dlar, clp, bs, resp, t;
         const bcv_f = BCV.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
         if (moneda === "CLP") {
-            clp = montoFinal;
-            tasaActual = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
-            dlar = (clp * tasaActual) / BCV;
+            clp = monto;
+            t = clp >= 250000 ? T_250K : (clp >= 60000 ? T_60K : T_BASE);
+            dlar = (clp * t) / BCV;
             bs = dlar * BCV;
-            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${tasaActual}\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
+            resp = `✅ *Cálculo RyR (Desde Pesos)*\n\n🇨🇱 Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP\n📊 Tasa: ${t}\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇻🇪 *Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs.*`;
         } 
         else if (moneda === "BS") {
-            bs = montoFinal;
+            bs = monto;
             dlar = bs / BCV;
             let clpRef = (dlar * BCV) / T_BASE;
-            tasaActual = clpRef >= 250000 ? T_250K : (clpRef >= 60000 ? T_60K : T_BASE);
-            clp = (dlar * BCV) / tasaActual;
+            t = clpRef >= 250000 ? T_250K : (clpRef >= 60000 ? T_60K : T_BASE);
+            clp = (dlar * BCV) / t;
             resp = `✅ *Cálculo RyR (Desde Bolívares)*\n\n🇻🇪 Reciben: ${Math.round(bs).toLocaleString('es-VE')} Bs\n📈 Dólar BCV: ${bcv_f} Bs.\n💵 USD: ${dlar.toFixed(2)}\n\n🇨🇱 *Envías: ${Math.round(clp).toLocaleString('es-CL')} CLP*`;
         } 
         else {
-            dlar = montoFinal;
+            dlar = monto;
             bs = dlar * BCV;
             let clpRef = bs / T_BASE;
-            tasaActual = clpRef >= 250000 ? T_250K : (clpRef >= 60000 ? T_60K : T_BASE);
-            clp = bs / tasaActual;
+            t = clpRef >= 250000 ? T_250K : (clpRef >= 60000 ? T_60K : T_BASE);
+            clp = bs / t;
             resp = `✅ *Cálculo RyR (Desde Dólares)*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📈 Dólar BCV: ${bcv_f} Bs.\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
         }
 
@@ -102,4 +109,4 @@ app.post('/', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR con Filtro de Seguridad"));
+app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR Ejecutándose"));
