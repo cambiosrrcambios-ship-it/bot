@@ -9,10 +9,25 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 
 app.post('/', async (req, res) => {
     try {
+        // 1. CAPTURAR DATOS (Mensaje y Remitente)
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
+        // AutoResponder suele enviar el número en 'sender' o 'contact_id'
+        const sender = req.body.query?.sender || req.body.sender || ""; 
+
         if (!userMsg) return res.json({ replies: [] });
 
-        // 1. Obtener Tasas del Excel
+        // --- FILTRO DE PAÍS: SOLO CHILE (Código 56) ---
+        // Limpiamos el número de símbolos como + por si acaso
+        const cleanSender = sender.replace(/\D/g, ''); 
+        
+        // Si el número NO empieza con 56, ignoramos.
+        // (Nota: Si el número es corto o no tiene código, también lo ignora)
+        if (cleanSender && !cleanSender.startsWith('56')) {
+            console.log(`Mensaje de ${sender} ignorado por no ser de Chile.`);
+            return res.json({ replies: [] });
+        }
+
+        // 2. OBTENER TASAS DEL EXCEL
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -22,11 +37,11 @@ app.post('/', async (req, res) => {
         const t250k = parseFloat(col[3].replace(',', '.'));
         const tBCV = parseFloat(col[5].replace(',', '.'));
 
-        // 2. Le pedimos a la IA que solo extraiga el NÚMERO y la MONEDA que pide el cliente
+        // 3. IA: EXTRAER MONTO Y MONEDA
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
-                { role: "system", content: "Extrae el monto y la moneda del mensaje del usuario. Responde solo en JSON: {\"monto\": 10, \"moneda\": \"USD\"}. Monedas posibles: CLP, BS, USD." },
+                { role: "system", content: "Extrae monto y moneda. Responde solo JSON: {\"monto\": 10, \"moneda\": \"USD\"}. Monedas: CLP, BS, USD." },
                 { role: "user", content: userMsg }
             ],
             temperature: 0
@@ -38,15 +53,18 @@ app.post('/', async (req, res) => {
         
         let clp, bs, usd, tasaUsada;
 
-        // 3. HACEMOS NOSOTROS LA MATEMÁTICA (No la IA)
+        // 4. CÁLCULOS MATEMÁTICOS (Lógica RyR)
         if (moneda === "USD") {
             bs = monto * tBCV;
-            tasaUsada = bs / tBase < 60000 ? tBase : (bs / t60k < 250000 ? t60k : t250k);
+            // Cálculo de tasa según el equivalente en BS / tBase para estimar CLP
+            let estimadoCLP = bs / tBase;
+            tasaUsada = estimadoCLP < 60000 ? tBase : (estimadoCLP < 250000 ? t60k : t250k);
             clp = bs / tasaUsada;
             usd = monto;
         } else if (moneda === "BS") {
             bs = monto;
-            tasaUsada = bs / tBase < 60000 ? tBase : (bs / t60k < 250000 ? t60k : t250k);
+            let estimadoCLP = bs / tBase;
+            tasaUsada = estimadoCLP < 60000 ? tBase : (estimadoCLP < 250000 ? t60k : t250k);
             clp = bs / tasaUsada;
             usd = bs / tBCV;
         } else { // CLP
@@ -56,20 +74,21 @@ app.post('/', async (req, res) => {
             usd = bs / tBCV;
         }
 
-        // 4. La IA ahora SOLO redacta el mensaje final con los números ya calculados
+        // 5. FORMATO FINAL
         const finalMsg = `✅ *Cotización RyR*
 💰 **Monto solicitado:** ${monto} ${moneda}
 ---
-🇨🇱 **Envías:** ${clp.toLocaleString('es-CL', {maximumFractionDigits: 0})} CLP
+🇨🇱 **Envías:** ${Math.round(clp).toLocaleString('es-CL')} CLP
 📈 **Tasa aplicada:** ${tasaUsada}
 💵 **Equivalente:** ${usd.toFixed(2)} USD
-🇻🇪 **Reciben:** ${bs.toLocaleString('es-VE', {maximumFractionDigits: 2})} Bs.
+🇻🇪 **Reciben:** ${bs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})} Bs.
 ---
 ¿Deseas los datos para transferir?`;
 
         return res.json({ replies: [{ message: finalMsg }] });
 
     } catch (e) {
+        console.error("Error en el servidor:", e);
         return res.json({ replies: [] });
     }
 });
