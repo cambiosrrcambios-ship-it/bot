@@ -9,22 +9,33 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 
 app.post('/', async (req, res) => {
     try {
-        // 1. CAPTURAR DATOS (Mensaje y Remitente)
+        // 1. CAPTURAR DATOS DEL MENSAJE Y REMITENTE
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
-        // AutoResponder suele enviar el número en 'sender' o 'contact_id'
-        const sender = req.body.query?.sender || req.body.sender || ""; 
+        // Intentamos capturar el número de varias formas posibles que usa AutoResponder
+        const sender = req.body.query?.sender || req.body.sender || req.body.contact_id || "";
+
+        console.log(`--- NUEVO MENSAJE ---`);
+        console.log(`Remitente original: ${sender}`);
+        console.log(`Mensaje: ${userMsg}`);
 
         if (!userMsg) return res.json({ replies: [] });
 
-        // --- FILTRO DE PAÍS: SOLO CHILE (Código 56) ---
-        // Limpiamos el número de símbolos como + por si acaso
-        const cleanSender = sender.replace(/\D/g, ''); 
+        // --- FILTRO DE PAÍS: SOLO CHILE (56) ---
+        // Limpiamos el número: quitamos el "+", espacios y cualquier letra
+        const cleanSender = sender.toString().replace(/\D/g, ''); 
         
-        // Si el número NO empieza con 56, ignoramos.
-        // (Nota: Si el número es corto o no tiene código, también lo ignora)
+        console.log(`Número limpio: ${cleanSender}`);
+
+        // Si el número tiene contenido pero no empieza por 56, bloqueamos
         if (cleanSender && !cleanSender.startsWith('56')) {
-            console.log(`Mensaje de ${sender} ignorado por no ser de Chile.`);
+            console.log(`BLOQUEADO: El número ${cleanSender} no es de Chile.`);
             return res.json({ replies: [] });
+        }
+
+        // --- FILTRO DE AHORRO ---
+        if (!/\d/.test(userMsg) && !userMsg.toLowerCase().includes("tasa")) {
+             console.log("Ignorado: No contiene números ni pide tasa.");
+             return res.json({ replies: [] });
         }
 
         // 2. OBTENER TASAS DEL EXCEL
@@ -41,56 +52,46 @@ app.post('/', async (req, res) => {
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
-                { role: "system", content: "Extrae monto y moneda. Responde solo JSON: {\"monto\": 10, \"moneda\": \"USD\"}. Monedas: CLP, BS, USD." },
+                { role: "system", content: "Extrae monto y moneda del usuario. Responde solo JSON: {\"monto\": 10, \"moneda\": \"USD\"}. Monedas: CLP, BS, USD." },
                 { role: "user", content: userMsg }
             ],
             temperature: 0
         });
 
         const data = JSON.parse(extraction.choices[0].message.content);
-        let monto = data.monto;
-        let moneda = data.moneda;
+        let montoOriginal = data.monto;
+        let monedaOriginal = data.moneda;
         
         let clp, bs, usd, tasaUsada;
 
-        // 4. CÁLCULOS MATEMÁTICOS (Lógica RyR)
-        if (moneda === "USD") {
-            bs = monto * tBCV;
-            // Cálculo de tasa según el equivalente en BS / tBase para estimar CLP
+        // 4. CÁLCULOS MATEMÁTICOS (Lógica RyR solicitada)
+        if (monedaOriginal === "USD") {
+            // Lógica USD: (USD * BCV) / Tasa_Excel = CLP
+            bs = montoOriginal * tBCV;
             let estimadoCLP = bs / tBase;
             tasaUsada = estimadoCLP < 60000 ? tBase : (estimadoCLP < 250000 ? t60k : t250k);
             clp = bs / tasaUsada;
-            usd = monto;
-        } else if (moneda === "BS") {
-            bs = monto;
+            usd = montoOriginal;
+        } else if (monedaOriginal === "BS") {
+            // Lógica BS: BS / Tasa_Excel = CLP | BS / BCV = USD
+            bs = montoOriginal;
             let estimadoCLP = bs / tBase;
             tasaUsada = estimadoCLP < 60000 ? tBase : (estimadoCLP < 250000 ? t60k : t250k);
             clp = bs / tasaUsada;
             usd = bs / tBCV;
-        } else { // CLP
-            clp = monto;
+        } else { 
+            // Lógica CLP: CLP * Tasa_Excel = BS | BS / BCV = USD
+            clp = montoOriginal;
             tasaUsada = clp < 60000 ? tBase : (clp < 250000 ? t60k : t250k);
             bs = clp * tasaUsada;
             usd = bs / tBCV;
         }
 
-        // 5. FORMATO FINAL
+        // 5. FORMATO FINAL PROFESIONAL
         const finalMsg = `✅ *Cotización RyR*
-💰 **Monto solicitado:** ${monto} ${moneda}
+💰 **Monto solicitado:** ${montoOriginal} ${monedaOriginal}
 ---
 🇨🇱 **Envías:** ${Math.round(clp).toLocaleString('es-CL')} CLP
 📈 **Tasa aplicada:** ${tasaUsada}
 💵 **Equivalente:** ${usd.toFixed(2)} USD
-🇻🇪 **Reciben:** ${bs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})} Bs.
----
-¿Deseas los datos para transferir?`;
-
-        return res.json({ replies: [{ message: finalMsg }] });
-
-    } catch (e) {
-        console.error("Error en el servidor:", e);
-        return res.json({ replies: [] });
-    }
-});
-
-app.listen(process.env.PORT || 10000);
+🇻🇪 **Reciben:** ${bs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
