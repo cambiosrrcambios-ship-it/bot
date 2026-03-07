@@ -14,16 +14,32 @@ const limpiarExcel = (v) => {
 };
 
 app.post('/', async (req, res) => {
+    // 1. LOG DE ENTRADA (Para ver en Render siempre)
+    console.log("--- NUEVA PETICIÓN RECIBIDA ---");
+    console.log("Cuerpo recibido:", JSON.stringify(req.body));
+
     try {
-        // --- FILTRO DE CHILE ---
-        // Extraemos el número del remitente
-        let sender = req.body.query?.sender || req.body.sender || "";
+        // 2. FILTRO DE CHILE RIGUROSO
+        // Extraemos el remitente de cualquier lugar posible del JSON
+        let senderRaw = req.body.query?.sender || req.body.sender || req.body.contact || "";
         
-        // Si no empieza por 56, ignoramos el mensaje por completo
-        if (sender !== "" && !sender.startsWith("56") && !sender.startsWith("+56")) {
+        // Limpiamos el número: quitamos "+", espacios y letras
+        let numeroLimpio = senderRaw.toString().replace(/\D/g, ''); 
+        
+        console.log(`DEBUG: Remitente: ${senderRaw} -> Número Limpio: ${numeroLimpio}`);
+
+        // Si el número tiene contenido y NO empieza por 56, ignoramos
+        if (numeroLimpio !== "" && !numeroLimpio.startsWith("56")) {
+            console.log("BLOQUEADO: El número no es de Chile.");
             return res.json({ replies: [] }); 
         }
 
+        // 3. OBTENER EL TEXTO DEL MENSAJE
+        let rawMsg = req.body.query?.message || req.body.message || req.body.text || "";
+        let texto = String(rawMsg).toLowerCase().trim();
+        console.log("Mensaje a procesar:", texto);
+
+        // 4. DESCARGAR DATOS DE GOOGLE SHEETS
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const columnas = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -33,36 +49,30 @@ app.post('/', async (req, res) => {
         const T_250K = limpiarExcel(columnas[3]);
         const BCV    = limpiarExcel(columnas[5]);
 
-        // 1. OBTENER EL TEXTO
-        let raw = req.body.query?.message || req.body.message || req.body.text || "";
-        let texto = String(raw).toLowerCase().trim();
-
-        // 2. EXTRAER EL NÚMERO (Mejorado para detectar 10000 o 10.000)
-        let textoLimpio = texto.replace(/\./g, '').replace(/,/g, '.');
-        let match = textoLimpio.match(/\d+(\.\d+)?/);
+        // 5. EXTRAER MONTO (Detecta 10000, 10.000, 10,5)
+        let textoParaMonto = texto.replace(/\./g, '').replace(/,/g, '.');
+        let matchMonto = textoParaMonto.match(/\d+(\.\d+)?/);
         
-        if (!match) {
-            return res.json({ replies: [{ message: "⚠️ Por favor, indica un monto (ej: 10000 pesos)." }] });
+        if (!matchMonto) {
+            console.log("ERROR: No se encontró un número en el mensaje.");
+            return res.json({ replies: [{ message: "⚠️ Por favor, indica un monto. Ejemplo: *10000 pesos* o *50 dolares*." }] });
         }
 
-        let montoBase = parseFloat(match[0]);
+        let montoBase = parseFloat(matchMonto[0]);
+        if (texto.includes("mil") && montoBase < 1000) montoBase *= 1000;
 
-        // 3. LOGICA DEL "MIL"
-        if (texto.includes("mil") && montoBase < 1000) {
-            montoBase = montoBase * 1000;
-        }
-
-        // 4. DETECTAR MONEDA (Mejorado para "dólares" y "bolívares")
+        // 6. DETECTAR MONEDA
         let moneda = "";
         if (/peso|clp|luca/.test(texto)) moneda = "CLP";
         else if (/bs|bolivar|bolívares|bolivares/.test(texto)) moneda = "BS";
         else if (/usd|dolar|dólar|\$/.test(texto)) moneda = "USD";
 
         if (!moneda) {
-            return res.json({ replies: [{ message: "⚠️ Indica si son *Pesos, Dólares o Bolívares*." }] });
+            console.log("ERROR: Moneda no detectada.");
+            return res.json({ replies: [{ message: "⚠️ ¿En qué moneda es el monto? (Pesos, Dólares o Bolívares)" }] });
         }
 
-        // 5. CÁLCULOS
+        // 7. CÁLCULOS
         let dlar, clp, bs, resp, tasaUsada;
         const bcv_f = BCV.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -90,12 +100,9 @@ app.post('/', async (req, res) => {
             resp = `✅ *Cálculo RyR (Desde Dólares)*\n\n💵 Monto: ${dlar.toLocaleString('en-US')} USD\n📈 Dólar BCV: ${bcv_f} Bs.\n\n🇨🇱 Chile: ${Math.round(clp).toLocaleString('es-CL')} CLP\n🇻🇪 Venezuela: ${Math.round(bs).toLocaleString('es-VE')} Bs.`;
         }
 
+        console.log("RESPUESTA ENVIADA EXITOSAMENTE");
         return res.json({ replies: [{ message: resp }] });
 
     } catch (e) {
-        return res.json({ replies: [{ message: "⚠️ Error en el cálculo. Intenta de nuevo." }] });
-    }
-});
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log("Servidor RyR con Filtro de Chile activo"));
+        console.error("ERROR CRÍTICO:", e.message);
+        return res.json({ replies: [{ message: "⚠️ Lo siento, tuve un problema técnico.
