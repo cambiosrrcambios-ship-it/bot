@@ -10,32 +10,9 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 app.post('/', async (req, res) => {
     try {
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
-        // Buscamos en todos los posibles lugares donde AutoResponder guarda el ID/Número
-        const sender = req.body.query?.sender || req.body.sender || req.body.contact_id || "";
-
-        console.log(`--- ENTRADA ---`);
-        console.log(`Remitente detectado: ${sender}`);
-
         if (!userMsg) return res.json({ replies: [] });
 
-        // --- FILTRO DE PAÍS INTELIGENTE ---
-        const cleanSender = sender.toString().replace(/\D/g, ''); 
-
-        // Lógica: Si hay números y NO empiezan con 56, bloqueamos.
-        // Si no hay números (es un nombre), dejamos pasar por seguridad.
-        if (cleanSender.length >= 7) { 
-            if (!cleanSender.startsWith('56')) {
-                console.log(`BLOQUEADO: El número ${cleanSender} no es de Chile.`);
-                return res.json({ replies: [] });
-            }
-        }
-
-        // --- FILTRO DE AHORRO ---
-        if (!/\d/.test(userMsg) && !userMsg.toLowerCase().includes("tasa")) {
-             return res.json({ replies: [] });
-        }
-
-        // 2. OBTENER TASAS
+        // 1. Obtener Tasas del Excel
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -45,7 +22,7 @@ app.post('/', async (req, res) => {
         const t250k = parseFloat(col[3].replace(',', '.'));
         const tBCV = parseFloat(col[5].replace(',', '.'));
 
-        // 3. IA: EXTRAER DATOS
+        // 2. Extracción de datos con IA
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
@@ -59,35 +36,36 @@ app.post('/', async (req, res) => {
         let montoOriginal = data.monto;
         let monedaOriginal = data.moneda;
         
-        let clp, bs, usd, tasaUsada;
+        let clp, bs, usd, tasaExcelUsada;
 
-        // 4. MATEMÁTICA RyR
+        // 3. LÓGICA MATEMÁTICA
         if (monedaOriginal === "USD") {
             bs = montoOriginal * tBCV;
-            let estimadoCLP = bs / tBase;
-            tasaUsada = estimadoCLP < 60000 ? tBase : (estimadoCLP < 250000 ? t60k : t250k);
-            clp = bs / tasaUsada;
+            let clpEstimado = bs / tBase; 
+            tasaExcelUsada = clpEstimado < 60000 ? tBase : (clpEstimado < 250000 ? t60k : t250k);
+            clp = bs / tasaExcelUsada;
             usd = montoOriginal;
         } else if (monedaOriginal === "BS") {
             bs = montoOriginal;
-            let estimadoCLP = bs / tBase;
-            tasaUsada = estimadoCLP < 60000 ? tBase : (estimadoCLP < 250000 ? t60k : t250k);
-            clp = bs / tasaUsada;
+            let clpEstimado = bs / tBase;
+            tasaExcelUsada = clpEstimado < 60000 ? tBase : (clpEstimado < 250000 ? t60k : t250k);
+            clp = bs / tasaExcelUsada;
             usd = bs / tBCV;
-        } else { 
+        } else { // CLP
             clp = montoOriginal;
-            tasaUsada = clp < 60000 ? tBase : (clp < 250000 ? t60k : t250k);
-            bs = clp * tasaUsada;
+            tasaExcelUsada = clp < 60000 ? tBase : (clp < 250000 ? t60k : t250k);
+            bs = clp * tasaExcelUsada;
             usd = bs / tBCV;
         }
 
-        // 5. FORMATO FINAL
+        // 4. Formateo del Mensaje Final con Tasa BCV
         const finalMsg = `✅ *Cotización RyR*
 💰 **Monto solicitado:** ${montoOriginal} ${monedaOriginal}
 ---
 🇨🇱 **Envías:** ${Math.round(clp).toLocaleString('es-CL')} CLP
-📈 **Tasa aplicada:** ${tasaUsada}
+📈 **Tasa:** ${tasaExcelUsada}
 💵 **Equivalente:** ${usd.toFixed(2)} USD
+🏛️ **Tasa BCV:** ${tBCV}
 🇻🇪 **Reciben:** ${bs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})} Bs.
 ---
 ¿Deseas los datos para transferir?`;
@@ -95,7 +73,6 @@ app.post('/', async (req, res) => {
         return res.json({ replies: [{ message: finalMsg }] });
 
     } catch (e) {
-        console.error("Error:", e.message);
         return res.json({ replies: [] });
     }
 });
