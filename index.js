@@ -9,20 +9,25 @@ const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkqLB77VTOC1
 
 app.post('/', async (req, res) => {
     try {
-        // 1. CAPTURAR DATOS
         const userMsg = req.body.query?.message || req.body.message || req.body.text || "";
+        // Buscamos en todos los posibles lugares donde AutoResponder guarda el ID/Número
         const sender = req.body.query?.sender || req.body.sender || req.body.contact_id || "";
 
-        console.log(`--- NUEVO MENSAJE ---`);
-        console.log(`Remitente: ${sender} | Mensaje: ${userMsg}`);
+        console.log(`--- ENTRADA ---`);
+        console.log(`Remitente detectado: ${sender}`);
 
         if (!userMsg) return res.json({ replies: [] });
 
-        // --- FILTRO DE PAÍS: SOLO CHILE (56) ---
+        // --- FILTRO DE PAÍS INTELIGENTE ---
         const cleanSender = sender.toString().replace(/\D/g, ''); 
-        if (cleanSender && !cleanSender.startsWith('56')) {
-            console.log(`BLOQUEADO: ${cleanSender} no es de Chile.`);
-            return res.json({ replies: [] });
+
+        // Lógica: Si hay números y NO empiezan con 56, bloqueamos.
+        // Si no hay números (es un nombre), dejamos pasar por seguridad.
+        if (cleanSender.length >= 7) { 
+            if (!cleanSender.startsWith('56')) {
+                console.log(`BLOQUEADO: El número ${cleanSender} no es de Chile.`);
+                return res.json({ replies: [] });
+            }
         }
 
         // --- FILTRO DE AHORRO ---
@@ -30,7 +35,7 @@ app.post('/', async (req, res) => {
              return res.json({ replies: [] });
         }
 
-        // 2. OBTENER TASAS DEL EXCEL
+        // 2. OBTENER TASAS
         const response = await axios.get(SHEET_URL);
         const filas = response.data.split(/\r?\n/).filter(f => f.trim() !== "");
         const col = filas[1].split(filas[1].includes(';') ? ';' : ',');
@@ -40,7 +45,7 @@ app.post('/', async (req, res) => {
         const t250k = parseFloat(col[3].replace(',', '.'));
         const tBCV = parseFloat(col[5].replace(',', '.'));
 
-        // 3. IA: EXTRAER MONTO Y MONEDA
+        // 3. IA: EXTRAER DATOS
         const extraction = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
@@ -56,7 +61,7 @@ app.post('/', async (req, res) => {
         
         let clp, bs, usd, tasaUsada;
 
-        // 4. CÁLCULOS MATEMÁTICOS (Lógica RyR)
+        // 4. MATEMÁTICA RyR
         if (monedaOriginal === "USD") {
             bs = montoOriginal * tBCV;
             let estimadoCLP = bs / tBase;
@@ -90,7 +95,7 @@ app.post('/', async (req, res) => {
         return res.json({ replies: [{ message: finalMsg }] });
 
     } catch (e) {
-        console.error("ERROR:", e.message);
+        console.error("Error:", e.message);
         return res.json({ replies: [] });
     }
 });
